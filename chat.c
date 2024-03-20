@@ -12,6 +12,8 @@
 #define BUFFER_SIZE 1024
 #define UINT16_MAX 65535
 
+//test commit
+
 struct ClientInfo {
     int client_socket;
     int client_index;
