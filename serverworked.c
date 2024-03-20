@@ -217,59 +217,111 @@ void start_server(const char *address, uint16_t port) {
 
 void *handle_client(void *arg) {
     struct ClientInfo *client_info = (struct ClientInfo *)arg;
+    uint8_t version;
+    uint16_t content_size;
+    char content[BUFFER_SIZE];
+    ssize_t bytes_received;
+
+    printf("Handling client %d\n", client_info->client_index);
+
 
     while (1) {
-        // Protocol handling code to read version and content_size ...
+        // Initialize buffer to zero
+        memset(content, 0, BUFFER_SIZE);
 
-        // Reading content based on protocol
-        char content[768]; // Adjusted for content size
-        ssize_t bytes_received = recv(client_info->client_socket, content, sizeof(content), MSG_WAITALL);
-        if (bytes_received <= 0) break; // Check for errors or closed connection
+        // Read the version (1 byte)
+        bytes_received = recv(client_info->client_socket, &version, sizeof(uint8_t), MSG_WAITALL);
+        printf("Processing command for client %d\n", client_info->client_index);
+        if (bytes_received <= 0) break;
+        printf("Received version: %u\n", version);
 
-        content[bytes_received] = '\0'; // Ensure null termination
+        // Read the content size (2 bytes)
+        bytes_received = recv(client_info->client_socket, &content_size, sizeof(uint16_t), MSG_WAITALL);
+        printf("Processing command for client %d\n", client_info->client_index);
+        if (bytes_received <= 0) break;
+        content_size = ntohs(content_size); // Convert from network byte order to host byte order
+        printf("Received content size: %u\n", content_size);
 
-        // Call to processCommand
+        // Ensure we do not exceed the buffer size
+        if (content_size >= BUFFER_SIZE) {
+            // Handle error or skip this message
+            continue; // For simplicity, we just skip to the next message
+        }
+
+        // Read the content
+        bytes_received = recv(client_info->client_socket, content, content_size, MSG_WAITALL);
+        printf("Processing command for client %d\n", client_info->client_index);
+        if (bytes_received <= 0) break;
+        content[bytes_received] = '\0'; // Null-terminate the content
+        printf("Received content: %s\n", content);
+
+        // Process the command
         processCommand(client_info, content);
     }
 
-    // Cleanup after loop exit
+    // Clean up
     close(client_info->client_socket);
     free(client_info);
     return NULL;
 }
 
-
 void processCommand(struct ClientInfo* client, const char* command) {
-    // Ensure command is null-terminated
+    printf("Received command: %s\n", command);
+
+    // Make a writable copy of command
     char command_copy[BUFFER_SIZE];
     strncpy(command_copy, command, BUFFER_SIZE);
     command_copy[BUFFER_SIZE - 1] = '\0';
-    trim_newline(command_copy); // Remove newline characters
 
-    // Parse and execute commands
+    // Trim potential newline characters
+    trim_newline(command_copy);
+
+
+    if (command[0] != '/') {
+        printf("Received command: %s\n", command);
+
+        char message[BUFFER_SIZE];
+        if (client->is_username_set) {
+            printf("Received command: %s\n", command);
+
+            snprintf(message, BUFFER_SIZE, "%s: %s\n", client->username, command);
+        } else {
+            printf("Received command: %s\n", command);
+
+            snprintf(message, BUFFER_SIZE, "Unknown user: %s\n", command);
+        }
+        // Broadcast the message
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (client->clients[i] != 0 && i != client->client_index) { // Exclude the sender
+                send_message_protocol(client->clients[i], message);
+            }
+        }
+        return;
+    }
+
     if (strncmp(command_copy, "/u ", 3) == 0) {
-        // Set username
-        setUsername(client, command_copy + 3); // Skip over "/u " to username
+        printf("Received command: %s\n", command);
+        setUsername(client, command_copy + 3);
     } else if (strcmp(command_copy, "/ul") == 0) {
-        // List users
+        printf("Received command: %s\n", command);
         listUsers(client);
     } else if (strncmp(command_copy, "/w ", 3) == 0) {
-        // Whisper
-        char* username = strtok(command_copy + 3, " "); // Extract username
-        char* message = strtok(NULL, ""); // Extract message
+        printf("Received command: %s\n", command);
+        char *username = strtok(command_copy + 3, " ");
+        char *message = strtok(NULL, "");
         if (username && message) {
+            printf("Received command: %s\n", command);
             whisper(client, username, message);
         }
     } else if (strcmp(command_copy, "/h") == 0) {
-        // Help
+        printf("Received command: %s\n", command);
         sendHelp(client);
     } else {
-        // Unknown command
-        const char* response = "Unknown command\n";
+        printf("Received command: %s\n", command);
+        char response[] = "Unknown command\n";
         send_message_protocol(client->client_socket, response);
     }
 }
-
 
 
 void setUsername(struct ClientInfo* client, const char* username) {
