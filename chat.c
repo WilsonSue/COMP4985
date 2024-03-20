@@ -217,22 +217,43 @@ void start_server(const char *address, uint16_t port) {
 
 void *handle_client(void *arg) {
     struct ClientInfo *client_info = (struct ClientInfo *)arg;
+    uint8_t version;
+    uint16_t content_size_net; // Content size in network byte order
+    uint16_t content_size;     // Content size in host byte order
+    char content[BUFFER_SIZE]; // Buffer for the message content
 
     while (1) {
-        // Protocol handling code to read version and content_size ...
+        // Read the version
+        ssize_t bytes_received = recv(client_info->client_socket, &version, sizeof(version), 0);
+        if (bytes_received <= 0) {
+            break; // Break if connection is closed or an error occurred
+        }
 
-        // Reading content based on protocol
-        char content[768]; // Adjusted for content size
-        ssize_t bytes_received = recv(client_info->client_socket, content, sizeof(content), MSG_WAITALL);
-        if (bytes_received <= 0) break; // Check for errors or closed connection
+        // Read the content size
+        bytes_received = recv(client_info->client_socket, &content_size_net, sizeof(content_size_net), 0);
+        if (bytes_received <= 0) {
+            break; // Break if connection is closed or an error occurred
+        }
+        content_size = ntohs(content_size_net); // Convert from network byte order to host byte order
 
-        content[bytes_received] = '\0'; // Ensure null termination
+        // Validate content size to avoid buffer overflow
+        if (content_size > sizeof(content) - 1) {
+            printf("Content size too large\n");
+            continue; // Skip this message
+        }
 
-        // Call to processCommand
+        // Read the content
+        bytes_received = recv(client_info->client_socket, content, content_size, 0);
+        if (bytes_received <= 0) {
+            break; // Break if connection is closed or an error occurred
+        }
+        content[bytes_received] = '\0'; // Null-terminate the received content
+
+        // Now that we have the content, we can process the command
         processCommand(client_info, content);
     }
 
-    // Cleanup after loop exit
+    // Close the client socket and free the client_info structure
     close(client_info->client_socket);
     free(client_info);
     return NULL;
