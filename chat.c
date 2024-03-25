@@ -12,8 +12,6 @@
 #define BUFFER_SIZE 1024
 #define UINT16_MAX 65535
 
-//test commit
-
 struct ClientInfo {
     int client_socket;
     int client_index;
@@ -223,6 +221,20 @@ void *handle_client(void *arg) {
     uint16_t content_size_net; // Content size in network byte order
     uint16_t content_size;     // Content size in host byte order
     char content[BUFFER_SIZE]; // Buffer for the message content
+    char username_buffer[256]; //Buffer to store username
+    char welcome_message[] = "Welcome to the chat server 3! Please set your username:\n";
+
+    //Recieve and set the username
+    ssize_t bytes_recieved = recv(client_info->client_socket, username_buffer, sizeof(username_buffer), 0);
+    if (bytes_recieved <= 0) {
+        close(client_info->client_socket);
+        free(client_info);
+        return NULL;
+    }
+
+    username_buffer[bytes_recieved] = '\0'; //Null-terminate the recieved username
+    trim_newline(username_buffer); //Remove new line characters
+    setUsername(client_info, username_buffer); //Set the recieved username
 
     while (1) {
         // Read the version
@@ -269,11 +281,16 @@ void processCommand(struct ClientInfo* client, const char* command) {
     command_copy[BUFFER_SIZE - 1] = '\0';
     trim_newline(command_copy); // Remove newline characters
 
+    //Check if the username is not set
+    if (!client->is_username_set){
+        setUsername(client, command_copy);//set username using the recieved command
+        return;
+    }
     // Parse and execute commands
-    if (strncmp(command_copy, "/u ", 3) == 0) {
-        // Set username
-        setUsername(client, command_copy + 3); // Skip over "/u " to username
-    } else if (strcmp(command_copy, "/ul") == 0) {
+//    if (strncmp(command_copy, "/u ", 3) == 0) {
+//        // Set username
+//        setUsername(client, command_copy + 3); // Skip over "/u " to username
+    if (strcmp(command_copy, "/ul") == 0) {
         // List users
         listUsers(client);
     } else if (strncmp(command_copy, "/w ", 3) == 0) {
