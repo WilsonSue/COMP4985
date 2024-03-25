@@ -18,6 +18,7 @@ struct ClientInfo {
     int clients[MAX_CLIENTS];
     char username[256];
     bool is_username_set;
+    char client_usernames[MAX_CLIENTS][256];
 };
 
 static const int value = 10;
@@ -32,8 +33,10 @@ void whisper(struct ClientInfo* client, const char* username, const char* messag
 void sendHelp(struct ClientInfo* client);
 void send_message_protocol(int sockfd, const char *message);
 void trim_newline(char *str);
+void initialize_client_usernames(struct ClientInfo* client);
+void removeClient(struct ClientInfo* client);
 
-int main(int argc, char *argv[]) {
+    int main(int argc, char *argv[]) {
     if (argc != 4) {
         fprintf(stderr, "Usage: %s [-a] <address> <port>\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -274,23 +277,25 @@ void *handle_client(void *arg) {
 }
 
 
-void processCommand(struct ClientInfo* client, const char* command) {
+void processCommand(struct ClientInfo* client, const char* command)
+{
     // Ensure command is null-terminated
     char command_copy[BUFFER_SIZE];
     strncpy(command_copy, command, BUFFER_SIZE);
     command_copy[BUFFER_SIZE - 1] = '\0';
-    trim_newline(command_copy); // Remove newline characters
+    trim_newline(command_copy);    // Remove newline characters
 
-    //Check if the username is not set
-    if (!client->is_username_set){
-        setUsername(client, command_copy);//set username using the recieved command
+    // Check if the username is not set
+    if(!client->is_username_set)
+    {
+        setUsername(client, command_copy);    // set username using the recieved command
         return;
     }
     // Parse and execute commands
-//    if (strncmp(command_copy, "/u ", 3) == 0) {
-//        // Set username
-//        setUsername(client, command_copy + 3); // Skip over "/u " to username
-    if (strcmp(command_copy, "/ul") == 0) {
+        if (strncmp(command_copy, "/u ", 3) == 0) {
+            // Set username
+            setUsername(client, command_copy + 3); // Skip over "/u " to username
+}else if (strcmp(command_copy, "/ul") == 0) {
         // List users
         listUsers(client);
     } else if (strncmp(command_copy, "/w ", 3) == 0) {
@@ -310,22 +315,33 @@ void processCommand(struct ClientInfo* client, const char* command) {
     }
 }
 
-
+void initialize_client_usernames(struct ClientInfo* client){
+    for (int i = 0; i < MAX_CLIENTS; i++){
+        client->client_usernames[i][0] = '\0';
+    }
+}
 
 void setUsername(struct ClientInfo* client, const char* username) {
     strncpy(client->username, username, sizeof(client->username) - 1);
     client->username[sizeof(client->username) - 1] = '\0'; // Ensure null-termination
     client->is_username_set = true;
+    strncpy(client->client_usernames[client->client_index], username, 256 - 1);
+    client->client_usernames[client->client_index][256 - 1] = '\0';
     char msg[] = "Username set successfully!\n";
     send_message_protocol(client->client_socket, msg);
 }
 
+void removeClient(struct ClientInfo* client) {
+    client->clients[client->client_index] = 0; //mark client as disconnected
+    client->is_username_set = false; //reset username flag
+    client->client_usernames[client->client_index][0] = '\0'; //clear username mapping
+}
 
 void listUsers(struct ClientInfo* client) {
     char userlist[BUFFER_SIZE] = "Connected users:\n";
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (client->clients[i] != 0 && client[i].is_username_set) {
-            strcat(userlist, client[i].username);
+        if (client->clients[i] != 0 && client->client_usernames[i][0] != '\0') {
+            strcat(userlist, client->client_usernames[i]);
             strcat(userlist, "\n");
         }
     }
