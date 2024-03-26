@@ -32,6 +32,7 @@ void whisper(struct ClientInfo* client, const char* username, const char* messag
 void sendHelp(struct ClientInfo* client);
 void send_message_protocol(int sockfd, const char *message);
 void trim_newline(char *str);
+void broadcastMessage(struct ClientInfo* client, const char* message);
 
 int main(int argc, char *argv[]) {
     if (argc != 4) {
@@ -145,6 +146,7 @@ void start_server(const char *address, uint16_t port) {
             for (int i = 0; i < MAX_CLIENTS; ++i) {
                 if (clients[i] == 0) {
                     client_index = i;
+                    printf("Adding Client %d socket %d to the list of managed clients.\n", client_index, client_socket);
                     break;
                 }
             }
@@ -168,6 +170,13 @@ void start_server(const char *address, uint16_t port) {
             printf("New connection from %s:%d, assigned to Client %d\n",
                    inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port),
                    client_index);
+            printf("Current clients:");
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i] != 0) {
+                    printf(" %d", clients[i]); // Print socket file descriptor
+                }
+            }
+            printf("\n");
 
             clients[client_index] = client_socket;
 
@@ -225,35 +234,33 @@ void *handle_client(void *arg) {
     while (1) {
         // Read the version
         ssize_t bytes_received = recv(client_info->client_socket, &version, sizeof(version), 0);
-        if (bytes_received <= 0) {
-            break; // Break if connection is closed or an error occurred
-        }
+        if (bytes_received <= 0) break;
 
         // Read the content size
         bytes_received = recv(client_info->client_socket, &content_size_net, sizeof(content_size_net), 0);
-        if (bytes_received <= 0) {
-            break; // Break if connection is closed or an error occurred
-        }
-        content_size = ntohs(content_size_net); // Convert from network byte order to host byte order
+        if (bytes_received <= 0) break;
+        content_size = ntohs(content_size_net);
 
-        // Validate content size to avoid buffer overflow
-        if (content_size > sizeof(content) - 1) {
-            printf("Content size too large\n");
-            continue; // Skip this message
+        printf("Debug: Received version: %u, content size: %u\n", version, content_size);
+
+        if (content_size > BUFFER_SIZE - 1) {
+            printf("Debug: Message size too large. Size: %u, Max: %d\n", content_size, BUFFER_SIZE - 1);
+            // Handle error: message size too large
+            char error_msg[] = "Error: Message size too large.\n";
+            send_message_protocol(client_info->client_socket, error_msg);
+            continue;
         }
 
         // Read the content
         bytes_received = recv(client_info->client_socket, content, content_size, 0);
-        if (bytes_received <= 0) {
-            break; // Break if connection is closed or an error occurred
-        }
-        content[bytes_received] = '\0'; // Null-terminate the received content
+        if (bytes_received <= 0) break;
+        content[bytes_received] = '\0';
 
-        // Now that we have the content, we can process the command
+        printf("Debug: Received content: %s\n", content);
+
         processCommand(client_info, content);
     }
 
-    // Close the client socket and free the client_info structure
     close(client_info->client_socket);
     free(client_info);
     return NULL;
@@ -261,6 +268,7 @@ void *handle_client(void *arg) {
 
 
 void processCommand(struct ClientInfo* client, const char* command) {
+    printf("Processing command from client %d: %s\n", client->client_index, command);
     // Ensure command is null-terminated
     char command_copy[BUFFER_SIZE];
     strncpy(command_copy, command, BUFFER_SIZE);
@@ -285,9 +293,8 @@ void processCommand(struct ClientInfo* client, const char* command) {
         // Help
         sendHelp(client);
     } else {
-        // Unknown command
-        const char* response = "Unknown command\n";
-        send_message_protocol(client->client_socket, response);
+        // Broadcast the message to all clients
+        broadcastMessage(client, command);
     }
 }
 
@@ -346,6 +353,8 @@ void send_message_protocol(int sockfd, const char *message) {
     uint8_t version = 1;
     uint16_t size = htons(strlen(message)); // Convert message length to network byte order
 
+    printf("Debug: Sending version: %u, message size: %u, message: %s\n", version, ntohs(size), message);
+
     // Allocate buffer for version, size, and message
     char buffer[BUFFER_SIZE];
     int offset = 0;
@@ -373,4 +382,35 @@ void trim_newline(char *str) {
     if ((pos = strchr(str, '\n')) != NULL) {
         *pos = '\0'; // Replace newline with null terminator
     }
+}
+
+void broadcastMessage(struct ClientInfo* client, const char* message) {
+    char formattedMessage[BUFFER_SIZE];
+    if (client->is_username_set) {
+        snprintf(formattedMessage, sizeof(formattedMessage), "%s: %s", client->username, message);
+    } else {
+        snprintf(formattedMessage, sizeof(formattedMessage), "client_%d: %s", client->client_index, message);
+    }
+
+    printf("Broadcasting to clients:");
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client->clients[i] != 0) {
+            printf(" %d", client->clients[i]);
+        }
+    }
+    printf("\n");
+
+
+    printf("Broadcasting message: %s\n", formattedMessage);
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client->clients[i] != 0 && i != client->client_index) {
+            printf("Sending message to client %d with socket %d\n", i, client->clients[i]);
+            send_message_protocol(client->clients[i], formattedMessage);
+        }
+    }
+
+    char senderMessage[BUFFER_SIZE];
+    snprintf(senderMessage, sizeof(senderMessage), "You sent: %s", message);
+    send_message_protocol(client->client_socket, senderMessage);
 }
