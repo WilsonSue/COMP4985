@@ -187,6 +187,9 @@ void processCommand(int sockfd, const char* command) {
         char* message = strtok_r(NULL, "", &saveptr); // Continue using saveptr
         if (username && message) {
             whisper(client->username, username, message);
+        }  else {
+            const char* errorMessage = "Error: Incorrect whisper command usage. Usage: /w <username> <message>\n";
+            send_message_protocol(sockfd, errorMessage);
         }
     } else if (strcmp(token, "/h") == 0) {
         printf("Help command received.\n");
@@ -293,9 +296,6 @@ void broadcastMessage(const char* senderUsername, const char* message) {
 
             // Debug log to verify formatted message
             printf("Broadcasting message: %s\n", formattedMessage);
-
-            const char* testMessage = "Test broadcast message\n";
-            send_message_protocol(clients[i].socket, testMessage);
 
             send_message_protocol(clients[i].socket, formattedMessage);
         }
