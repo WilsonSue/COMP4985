@@ -184,6 +184,7 @@ void processCommand(int sockfd, const char* command) {
             whisper(client->username, username, message);
         }
     } else if (strcmp(token, "/h") == 0) {
+        printf("Help command received.\n");
         sendHelp(sockfd);
     } else {
         // This is not a recognized command, treat it as a broadcast message
@@ -205,8 +206,6 @@ void setUsername(int sockfd, const char* username) {
     }
     pthread_mutex_unlock(&clients_mutex);
 }
-
-
 
 void listUsers(int sockfd) {
     char userlist[BUFFER_SIZE] = "Connected users:\n";
