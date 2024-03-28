@@ -28,13 +28,13 @@ int server_socket; // Make server_socket global
 void *handle_client(void *arg);
 void start_server(const char *address, uint16_t port);
 void send_message_protocol(int sockfd, const char *message);
-void broadcastMessage(const char* message);
+void broadcastMessage(const char* senderUsername, const char* message);
 void listUsers(int sockfd);
 void whisper(const char* senderUsername, const char* username, const char* message);
 void trim_newline(char *str);
 
 // Helper functions to manage clients
-void addClient(int socket, const char* username);
+void addClient(int socket);
 void removeClient(int socket);
 Client* getClientByUsername(const char* username);
 void setUsername(int sockfd, const char* username);
@@ -122,7 +122,7 @@ void *handle_client(void *arg) {
     uint16_t content_size_net, content_size;
     char content[BUFFER_SIZE];
 
-    addClient(client_socket, ""); // Add client with a temporary empty username
+    addClient(client_socket); // Add client with a temporary empty username
 
     while (1) {
         if (recv(client_socket, &version, sizeof(version), 0) <= 0 ||
@@ -144,6 +144,7 @@ void *handle_client(void *arg) {
         content[bytes_received] = '\0'; // Ensure message is null-terminated
         printf("Received message: %s\n", content);
 
+        printf("Debug: Message before processing command: %s\n", content);
         // Example processing command, this needs to be expanded according to your application's protocol
         processCommand(client_socket, content);
     }
@@ -188,7 +189,7 @@ void processCommand(int sockfd, const char* command) {
         sendHelp(sockfd);
     } else {
         // This is not a recognized command, treat it as a broadcast message
-        broadcastMessage(command);
+        broadcastMessage(client->username, command);
     }
     free(rest); // Now it's safe to free the strdup'ed command copy
 }
@@ -278,23 +279,35 @@ void trim_newline(char *str) {
     }
 }
 
-void broadcastMessage(const char* message) {
+// Modify the function to accept the sender's username
+void broadcastMessage(const char* senderUsername, const char* message) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].is_active) {
-            send_message_protocol(clients[i].socket, message);
+        if (clients[i].is_active && strcmp(clients[i].username, senderUsername) != 0) { // Don't send the message back to the sender
+            char formattedMessage[BUFFER_SIZE];
+            snprintf(formattedMessage, BUFFER_SIZE, "%s has sent: %s", senderUsername, message);
+
+            // Debug log to verify formatted message
+            printf("Broadcasting message: %s\n", formattedMessage);
+
+            const char* testMessage = "Test broadcast message\n";
+            send_message_protocol(clients[i].socket, testMessage);
+
+            send_message_protocol(clients[i].socket, formattedMessage);
         }
     }
     pthread_mutex_unlock(&clients_mutex);
 }
 
-void addClient(int socket, const char* username) {
+
+void addClient(int socket) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (!clients[i].is_active) {
             clients[i].socket = socket;
-            strncpy(clients[i].username, username, MAX_USERNAME_LENGTH - 1);
+            snprintf(clients[i].username, MAX_USERNAME_LENGTH, "client_%d", i); // Auto assign username
             clients[i].is_active = true;
+            printf("Client %d connected with username: %s\n", socket, clients[i].username); // Debug log
             break;
         }
     }
