@@ -172,9 +172,13 @@ void processCommand(int sockfd, const char* command) {
     }
 
     if (strcmp(token, "/u") == 0) {
-        token = strtok_r(NULL, " ", &saveptr); // Continue using saveptr
+        token = strtok_r(NULL, " ", &saveptr); // Attempt to retrieve the next part of the command (username)
         if (token) {
             setUsername(sockfd, token);
+        } else {
+            // If token is NULL, it means no username was provided after /u
+            const char* errorMessage = "Error: No username provided. Usage: /u <username>\n";
+            send_message_protocol(sockfd, errorMessage);
         }
     } else if (strcmp(token, "/ul") == 0) {
         listUsers(sockfd);
