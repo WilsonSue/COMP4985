@@ -458,7 +458,7 @@
      * @param sockfd   the file descriptor of the socket to write to
      */
     static void write_to_socket(int sockfd, const char *message) {
-        size_t message_len = strlen(message);
+        size_t message_len = strlen(message) - 1;
         uint16_t size = htons((uint16_t)message_len); // Convert size to network byte order
         uint8_t version = 1;
 
