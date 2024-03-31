@@ -21,11 +21,19 @@ typedef struct {
     bool is_active;
 } Client;
 
+typedef struct {
+    uint8_t version;
+    uint16_t length;
+    char* content;
+} Packet;
+
+
 Client clients[MAX_CLIENTS]; // Global client list
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for thread-safe access to clients
 int server_socket; // Make server_socket global
 
 void *handle_client(void *arg);
+void *handle_servermanager(void *arg);
 void start_server(const char *address, uint16_t port);
 void send_message_protocol(int sockfd, const char *message);
 void broadcastMessage(const char* senderUsername, const char* message);
@@ -59,7 +67,16 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Starting server on %s:%ld\n", argv[1], port_long);
+    pthread_t manager_tid;
+    if (pthread_create(&manager_tid, NULL, handle_servermanager, NULL) != 0) {
+        perror("Server manager thread creation failed");
+        exit(EXIT_FAILURE);
+    }
+
     start_server(argv[1], (uint16_t)port_long);
+
+    // Wait for the server manager thread to finish
+    pthread_join(manager_tid, NULL);
 
     return 0;
 }
@@ -105,7 +122,7 @@ void start_server(const char *address, uint16_t port) {
         }
 
         pthread_t tid;
-        if (pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)client_socket) != 0) {
+        if (pthread_create(&tid, NULL, handle_servermanager, (void *)(intptr_t)client_socket) != 0) {
             perror("Thread creation failed");
             close(client_socket);
         } else {
@@ -126,7 +143,7 @@ void *handle_client(void *arg) {
 
     while (1) {
         if (recv(client_socket, &version, sizeof(version), 0) <= 0 ||
-            recv(client_socket, &content_size_net, sizeof(content_size_net), 0) <= 0) {
+           recv(client_socket, &content_size_net, sizeof(content_size_net), 0) <= 0) {
             break; // Client disconnected
         }
 
@@ -243,11 +260,11 @@ void whisper(const char* senderUsername, const char* username, const char* messa
 
 void sendHelp(int sockfd) {
     char helpMessage[] =
-            "Supported commands:\n"
-            "/u <username> - Set your username.\n"
-            "/ul - List all users connected to the server.\n"
-            "/w <username> <message> - Whisper a private message to <username>.\n"
-            "/h - Show this help message.\n";
+        "Supported commands:\n"
+        "/u <username> - Set your username.\n"
+        "/ul - List all users connected to the server.\n"
+        "/w <username> <message> - Whisper a private message to <username>.\n"
+        "/h - Show this help message.\n";
     send_message_protocol(sockfd, helpMessage);
 }
 
@@ -360,4 +377,124 @@ Client* getClientByUsername(const char* username) {
     }
     pthread_mutex_unlock(&clients_mutex);
     return NULL;
+}
+
+Packet receivePacket(int client_socket) {
+    Packet packet;
+
+    // Receive version
+    if (recv(client_socket, &packet.version, sizeof(packet.version), 0) == -1) {
+        perror("Receive version failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Receive length
+    if (recv(client_socket, &packet.length, sizeof(packet.length), 0) == -1) {
+        perror("Receive length failed");
+        exit(EXIT_FAILURE);
+    } else {
+        printf("Received length: %d\n", packet.length);
+    }
+
+    // Allocate memory for content
+    packet.content = (char *)malloc(packet.length * sizeof(char));
+
+    // Receive content
+    if (recv(client_socket, packet.content, packet.length, 0) == -1) {
+        perror("Receive content failed");
+        exit(EXIT_FAILURE);
+    } else {
+        printf("Received content: %s\n", packet.content);
+    }
+
+    return packet;
+}
+
+void sendPacket(int client_socket, char* content) {
+    Packet packet;
+    packet.version = 1;
+    packet.content = content;
+    packet.length = strlen(packet.content);
+
+    printf("Sending packet with content: %s\n", packet.content);
+    printf("Sending packet with length: %d\n", packet.length);
+
+    // Send version
+    if (send(client_socket, &packet.version, sizeof(packet.version), 0) == -1) {
+        perror("Send version failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Send length
+    if (send(client_socket, &packet.length, sizeof(packet.length), 0) == -1) {
+        perror("Send length failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Send content
+    if (send(client_socket, packet.content, packet.length, 0) == -1) {
+        perror("Send content failed");
+        exit(EXIT_FAILURE);
+    }
+}
+
+
+void *handle_servermanager(void *arg)
+{
+    printf("Starting server for server manager.\n");
+    printf("Waiting for server manager to connect...\n");
+
+    int      client_socket = (int)(intptr_t)arg;
+    uint8_t  version;
+    uint16_t content_size_net, content_size;
+    char     content[BUFFER_SIZE];
+
+    addClient(client_socket);    // Add client with a temporary empty username
+
+    while(1)
+    {
+        if(recv(client_socket, &version, sizeof(version), 0) <= 0 || recv(client_socket, &content_size_net, sizeof(content_size_net), 0) <= 0)
+        {
+            break;    // Client disconnected
+        }
+
+        printf("Server manager connected. Waiting for authentication.\n");
+
+        Packet packet;
+
+        // Receive password packet
+        printf("Getting password.");
+        packet         = receivePacket(client_socket);
+        char *password = packet.content;
+
+//        //Check if the password matches the expected password
+        if (strcmp(password,"hellyabrother") == 0) {
+            sendPacket(client_socket, "ACCEPTED");
+            printf("Got password.");
+        }
+
+        // sendDiagnosticData(client_socket);
+
+        // Now the server manager is authenticated, proceed with command handling
+        while(1)
+        {
+            // Receive message packet
+            printf("Waiting for command...\n");
+            packet = receivePacket(client_socket);
+            if(strcmp(packet.content, "/s") == 0)
+            {
+                sendPacket(client_socket, "STARTED");
+                // start_server(client_socket);
+            }
+            else if(strcmp(packet.content, "/q") == 0)
+            {
+                sendPacket(client_socket, "STOPPED");
+                break; // Exit the command handling loop
+            }
+            else
+            {
+                sendPacket(client_socket, "UNKNOWN COMMAND");
+            }
+        }
+    }
 }
