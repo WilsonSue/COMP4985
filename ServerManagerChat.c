@@ -297,8 +297,20 @@ void whisper(const char* senderUsername, const char* username, const char* messa
         send_message_protocol(recipient->socket, whisperMsg);
     } else {
         // Handle user not found
+        char errorMsg[BUFFER_SIZE];
+        snprintf(errorMsg, sizeof(errorMsg), "Error: User '%s' not found.\n", username);
+        // Now find the sender's socket to send back the error message
+        Client* sender = getClientByUsername(senderUsername);
+        if (sender) {
+            send_message_protocol(sender->socket, errorMsg);
+        } else {
+            printf("Error: Sender '%s' not found.\n", senderUsername);
+            // This else block is more of a safety check and should ideally never be reached
+            // because this function is being called by a client who must exist.
+        }
     }
 }
+
 
 
 void sendHelp(int sockfd) {
