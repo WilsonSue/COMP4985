@@ -135,14 +135,15 @@ void start_server(const char *address, uint16_t port) {
         }
 
         if (mode == 2 && !server_manager_authenticated) {
-            // Handle server manager authentication separately.
+            // This block is correctly handling server manager authentication
             pthread_t server_manager_thread;
             if (pthread_create(&server_manager_thread, NULL, handle_server_manager, (void *)(intptr_t)client_socket) != 0) {
                 perror("Server Manager Thread creation failed");
                 close(client_socket);
             }
-            continue; // Go back to the start of the loop.
-        } else if (mode == 1 || (mode == 2 && server_operational)) { // Adjusted line
+        } else {
+            // Regular client handling
+            // Ensure this block is correctly identifying and handling regular clients
             pthread_t tid;
             if (pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)client_socket) != 0) {
                 perror("Thread creation failed");
@@ -150,11 +151,9 @@ void start_server(const char *address, uint16_t port) {
             } else {
                 pthread_detach(tid);
             }
-        } else {
-            // This else block is for handling non-operational state in server manager mode
-            close(client_socket); // Close client connection if not operational yet in server manager mode
         }
     }
+
     close(server_socket);
 }
 
@@ -164,11 +163,6 @@ void *handle_client(void *arg) {
     uint8_t version;
     uint16_t content_size_net, content_size;
     char content[BUFFER_SIZE];
-
-    if (mode == 2) { // Server manager mode
-        // Initially, only authenticate the server manager
-        initializeServerManagerMode(client_socket);
-    }
 
     addClient(client_socket); // Add client with a temporary empty username
 
@@ -210,68 +204,69 @@ void processCommand(int sockfd, const char* command) {
         return;
     }
 
+    // Copy and trim the command to ensure we work with a clean version
+    char commandCopy[BUFFER_SIZE];
+    strncpy(commandCopy, command, BUFFER_SIZE - 1); // Ensure space for null terminator
+    commandCopy[BUFFER_SIZE - 1] = '\0'; // Manually null-terminate
+    trim_newline(commandCopy); // Trim newline from the command copy
+
+    // Use commandCopy instead of duplicating original command
     char* token;
-    char* rest = strdup(command);
+    char* rest = commandCopy; // Directly use trimmed command copy
     char* saveptr = NULL;
     token = strtok_r(rest, " ", &saveptr);
 
     if (token == NULL) {
-        free(rest);
-        return;
+        return; // Early exit if the token is null
     }
 
-    // Handling server start command by the server manager.
     if (strcmp(token, "/s") == 0 && client->is_server_manager) {
         server_operational = true;
         const char* msg = "Server is now operational. Accepting client connections...\n";
         send_message_protocol(sockfd, msg);
-        free(rest);
-        return; // Early return to prevent further command processing.
-    }
-
-    if (strcmp(token, "/u") == 0) {
-        token = strtok_r(NULL, " ", &saveptr); // Attempt to retrieve the next part of the command (username)
+        return; // Early return to prevent further command processing
+    } else if (strcmp(token, "/u") == 0) {
+        token = strtok_r(NULL, " ", &saveptr);
         if (token) {
             setUsername(sockfd, token);
         } else {
-            // If token is NULL, it means no username was provided after /u
             const char* errorMessage = "Error: No username provided. Usage: /u <username>\n";
             send_message_protocol(sockfd, errorMessage);
         }
     } else if (strcmp(token, "/ul") == 0) {
         listUsers(sockfd);
     } else if (strcmp(token, "/w") == 0) {
-        char* username = strtok_r(NULL, " ", &saveptr); // Continue using saveptr
-        char* message = strtok_r(NULL, "", &saveptr); // Continue using saveptr
+        char* username = strtok_r(NULL, " ", &saveptr);
+        char* message = strtok_r(NULL, "", &saveptr);
         if (username && message) {
             whisper(client->username, username, message);
-        }  else {
+        } else {
             const char* errorMessage = "Error: Incorrect whisper command usage. Usage: /w <username> <message>\n";
             send_message_protocol(sockfd, errorMessage);
         }
     } else if (strcmp(token, "/h") == 0) {
-        printf("Help command received.\n");
         sendHelp(sockfd);
     } else if (strcmp(token, "/e") == 0) {
         printf("Client requested to close the connection.\n");
         removeClient(sockfd);
         close(sockfd);
-        return; // Exit the function to prevent further processing
     } else {
-        // Else it is not a recognized command, treat it as a broadcast message
-        broadcastMessage(client->username, command);
+        broadcastMessage(client->username, commandCopy); // Use trimmed command for broadcasting
     }
-    free(rest);
 }
 
 void setUsername(int sockfd, const char* username) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].socket == sockfd) {
-            strncpy(clients[i].username, username, MAX_USERNAME_LENGTH - 1);
+            char trimmedUsername[MAX_USERNAME_LENGTH];
+            strncpy(trimmedUsername, username, MAX_USERNAME_LENGTH);
+            trim_newline(trimmedUsername); // Trim newline character
+            strncpy(clients[i].username, trimmedUsername, MAX_USERNAME_LENGTH - 1);
             clients[i].username[MAX_USERNAME_LENGTH - 1] = '\0'; // Ensure null-termination
             char msg[] = "Username set successfully.\n";
             send_message_protocol(sockfd, msg);
+            printf("Username changed to: %s\n", clients[i].username); // Debugging line to confirm the change
             break;
         }
     }
