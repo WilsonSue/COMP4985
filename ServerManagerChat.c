@@ -535,25 +535,42 @@ void *handle_server_manager(void *arg) {
 
     // Handle server manager commands.
     while (server_manager_authenticated) {
-        ssize_t bytes_received = recv(client_socket, content, BUFFER_SIZE - 1, 0);
-        if (bytes_received <= 0) {
-            printf("Server manager disconnected.\n");
-            server_manager_authenticated = false;
-            server_operational = false; // Consider what should happen here.
-            close(client_socket);
-            return NULL;
+        // Read version
+        if (recv(client_socket, &version, sizeof(version), 0) <= 0) {
+            printf("Failed to read version\n");
+            break;
         }
-        content[bytes_received] = '\0';
 
+        // Read content size
+        if (recv(client_socket, &content_size_net, sizeof(content_size_net), 0) <= 0) {
+            printf("Failed to read content size\n");
+            break;
+        }
+        content_size = ntohs(content_size_net);
+
+        // Ensure that the content size is within buffer limits
+        if (content_size >= BUFFER_SIZE) {
+            printf("Content size too large\n");
+            continue; // Skip this message but don't disconnect
+        }
+
+        // Read content based on the received size
+        ssize_t bytes_received = recv(client_socket, content, content_size, 0);
+        if (bytes_received <= 0) {
+            printf("Failed to read content or server manager disconnected\n");
+            break; // Break out of the loop on failure to read content
+        }
+        content[bytes_received] = '\0'; // Null-terminate the received content
+
+        // Process the command
         if (strcmp(content, "/s") == 0) {
             server_operational = true;
-            broadcastMessage("Server", "Server is now operational. Accepting client connections...\n");
+            broadcastMessage("Server", "Server is now operational. Accepting client connections...");
             printf("Server is now operational. Accepting client connections...\n");
         } else if (strcmp(content, "/q") == 0) {
             printf("Server is shutting down by server manager command.\n");
             exit(EXIT_SUCCESS); // Or handle server shutdown more gracefully.
         }
     }
-
     return NULL;
 }
