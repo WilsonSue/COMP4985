@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <signal.h>
-
+#include <getopt.h>
 
 #define MAX_CLIENTS 32
 #define BUFFER_SIZE 1024
@@ -44,22 +44,50 @@ void sendHelp(int sockfd);
 void sigintHandler(int sig_num);
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <address> <port>\n", argv[0]);
+    int mode = 0; // 0: undefined, 1: independent server, 2: server manager
+
+    int opt;
+    while ((opt = getopt(argc, argv, "im")) != -1) {
+        switch (opt) {
+            case 'i':
+                mode = 1;
+                break;
+            case 'm':
+                mode = 2;
+                break;
+            default: /* '?' */
+                fprintf(stderr, "Usage: %s [-i | -m] <address> <port>\n", argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+    if (mode == 0 || optind + 2 > argc) {
+        fprintf(stderr, "Usage: %s [-i | -m] <address> <port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    char *endptr;
-    long int port_long = strtol(argv[2], &endptr, 10);
-
-    // Check for conversion errors
-    if (*endptr != '\0' || port_long < 0 || port_long > UINT16_MAX) {
-        fprintf(stderr, "Invalid port number: %s\n", argv[2]);
+    char *address = argv[optind];
+    char *port_str = argv[optind + 1];
+    long int port_long = strtol(port_str, NULL, 10);
+    if (port_long < 1 || port_long > UINT16_MAX) {
+        fprintf(stderr, "Invalid port number: %s\n", port_str);
         exit(EXIT_FAILURE);
     }
 
-    printf("Starting server on %s:%ld\n", argv[1], port_long);
-    start_server(argv[1], (uint16_t)port_long);
+    switch (mode) {
+        case 1: // Independent server mode
+            printf("Starting independent server on %s:%ld\n", address, port_long);
+            start_server(address, (uint16_t)port_long);
+            break;
+        case 2: // Server manager mode
+            printf("Starting server manager on %s:%ld\n", address, port_long);
+            // Add specific logic for server manager mode here
+            break;
+        default:
+            fprintf(stderr, "Unknown mode. Please use -i for independent server mode or -m for server manager mode.\n");
+            exit(EXIT_FAILURE);
+    }
+
 
     return 0;
 }
