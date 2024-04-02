@@ -151,7 +151,7 @@ void start_server(const char *address, uint16_t port) {
                 pthread_detach(tid);
             }
         } else {
-            // This else block might be for handling non-operational state in server manager mode
+            // This else block is for handling non-operational state in server manager mode
             close(client_socket); // Close client connection if not operational yet in server manager mode
         }
     }
@@ -202,6 +202,7 @@ void *handle_client(void *arg) {
     return NULL;
 }
 
+// commands need a space to work ex. "/h ", "/ul ", "/e "
 void processCommand(int sockfd, const char* command) {
     Client* client = getClientBySocket(sockfd);
     if (!client) {
@@ -253,14 +254,14 @@ void processCommand(int sockfd, const char* command) {
         sendHelp(sockfd);
     } else if (strcmp(token, "/e") == 0) {
         printf("Client requested to close the connection.\n");
-        removeClient(sockfd); // Remove client from the global list
-        close(sockfd); // Close the socket connection
+        removeClient(sockfd);
+        close(sockfd);
         return; // Exit the function to prevent further processing
     } else {
-        // This is not a recognized command, treat it as a broadcast message
+        // Else it is not a recognized command, treat it as a broadcast message
         broadcastMessage(client->username, command);
     }
-    free(rest); // Now it's safe to free the strdup'ed command copy
+    free(rest);
 }
 
 void setUsername(int sockfd, const char* username) {
@@ -307,13 +308,9 @@ void whisper(const char* senderUsername, const char* username, const char* messa
             send_message_protocol(sender->socket, errorMsg);
         } else {
             printf("Error: Sender '%s' not found.\n", senderUsername);
-            // This else block is more of a safety check and should ideally never be reached
-            // because this function is being called by a client who must exist.
         }
     }
 }
-
-
 
 void sendHelp(int sockfd) {
     char helpMessage[] =
@@ -321,7 +318,8 @@ void sendHelp(int sockfd) {
             "/u <username> - Set your username.\n"
             "/ul - List all users connected to the server.\n"
             "/w <username> <message> - Whisper a private message to <username>.\n"
-            "/h - Show this help message.\n";
+            "/h - Show this help message.\n"
+            "/e - Exit the connection.\n";
     send_message_protocol(sockfd, helpMessage);
 }
 
@@ -331,25 +329,19 @@ void send_message_protocol(int sockfd, const char *message) {
 
     printf("Debug: Sending version: %u, message size: %u, message: %s\n", version, ntohs(size), message);
 
-    // Allocate buffer for version, size, and message
     char buffer[BUFFER_SIZE];
     int offset = 0;
 
-    // Assign version to buffer
     memcpy(buffer + offset, &version, sizeof(version));
     offset += sizeof(version);
 
-    // Assign size to buffer
     memcpy(buffer + offset, &size, sizeof(size));
     offset += sizeof(size);
 
-    // Copy message content to buffer
     memcpy(buffer + offset, message, ntohs(size));
 
-    // Calculate total size to send
     ssize_t total_size = offset + ntohs(size);
 
-    // Send buffer
     send(sockfd, buffer, total_size, 0);
 }
 
@@ -360,7 +352,6 @@ void trim_newline(char *str) {
     }
 }
 
-// Modify the function to accept the sender's username
 void broadcastMessage(const char* senderUsername, const char* message) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
