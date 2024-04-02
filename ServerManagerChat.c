@@ -31,25 +31,27 @@ bool server_manager_authenticated = false;
 bool server_operational = false;
 
 void *handle_client(void *arg);
+void *handle_server_manager(void *arg);
 void start_server(const char *address, uint16_t port);
-void send_message_protocol(int sockfd, const char *message);
 void broadcastMessage(const char* senderUsername, const char* message);
 void listUsers(int sockfd);
 void whisper(const char* senderUsername, const char* username, const char* message);
-void trim_newline(char *str);
 bool authenticate_server_manager(const char* password);
 void initializeServerManagerMode(int client_socket);
 
 // Helper functions to manage clients
 void addClient(int socket);
 void removeClient(int socket);
+void trim_newline(char *str);
+void send_message_protocol(int sockfd, const char *message);
 Client* getClientByUsername(const char* username);
 void setUsername(int sockfd, const char* username);
 Client* getClientBySocket(int socket);
 void processCommand(int sockfd, const char* command);
 void sendHelp(int sockfd);
 void sigintHandler(int sig_num);
-void *handle_server_manager(void *arg);
+int countActiveClients();
+void notifyServerManagers(const char *message);
 
 int main(int argc, char *argv[]) {
     // Parse command-line options
@@ -378,27 +380,40 @@ void broadcastMessage(const char* senderUsername, const char* message) {
 
 void addClient(int socket) {
     pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    bool found = false;
+    for (int i = 0; i < MAX_CLIENTS && !found; i++) {
         if (!clients[i].is_active) {
             clients[i].socket = socket;
-            snprintf(clients[i].username, MAX_USERNAME_LENGTH, "client_%d", i); // Auto assign username
+            snprintf(clients[i].username, MAX_USERNAME_LENGTH, "client_%d", i);
             clients[i].is_active = true;
-            printf("Client %d connected with username: %s\n", socket, clients[i].username); // Debug log
-            break;
+            printf("Client %d connected with username: %s\n", socket, clients[i].username);
+            found = true;
         }
     }
     pthread_mutex_unlock(&clients_mutex);
+    if (found) {
+        char msg[BUFFER_SIZE];
+        snprintf(msg, sizeof(msg), "Connected clients: %d", countActiveClients());
+        notifyServerManagers(msg);
+    }
 }
 
 void removeClient(int socket) {
     pthread_mutex_lock(&clients_mutex);
+    bool found = false;
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].socket == socket) {
             clients[i].is_active = false;
+            found = true;
             break;
         }
     }
     pthread_mutex_unlock(&clients_mutex);
+    if (found) {
+        char msg[BUFFER_SIZE];
+        snprintf(msg, sizeof(msg), "Connected clients: %d", countActiveClients());
+        notifyServerManagers(msg);
+    }
 }
 
 Client* getClientBySocket(int socket) {
@@ -574,3 +589,22 @@ void *handle_server_manager(void *arg) {
     }
     return NULL;
 }
+
+int countActiveClients() {
+    int count = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].is_active) count++;
+    }
+    return count;
+}
+
+void notifyServerManagers(const char *message) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].is_active && clients[i].is_server_manager) {
+            send_message_protocol(clients[i].socket, message);
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
