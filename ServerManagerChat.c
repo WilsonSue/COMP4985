@@ -14,16 +14,21 @@
 #define MAX_CLIENTS 32
 #define BUFFER_SIZE 1024
 #define MAX_USERNAME_LENGTH 256
+#define SERVER_MANAGER_PASSWORD "hellyabrother"
 
 typedef struct {
     int socket;
     char username[MAX_USERNAME_LENGTH];
     bool is_active;
+    bool is_server_manager;
 } Client;
 
 Client clients[MAX_CLIENTS]; // Global client list
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for thread-safe access to clients
 int server_socket; // Make server_socket global
+int mode = 0; // Global server mode
+bool server_manager_authenticated = false;
+bool server_operational = false;
 
 void *handle_client(void *arg);
 void start_server(const char *address, uint16_t port);
@@ -32,6 +37,8 @@ void broadcastMessage(const char* senderUsername, const char* message);
 void listUsers(int sockfd);
 void whisper(const char* senderUsername, const char* username, const char* message);
 void trim_newline(char *str);
+bool authenticate_server_manager(const char* password);
+void initializeServerManagerMode(int client_socket);
 
 // Helper functions to manage clients
 void addClient(int socket);
@@ -42,25 +49,26 @@ Client* getClientBySocket(int socket);
 void processCommand(int sockfd, const char* command);
 void sendHelp(int sockfd);
 void sigintHandler(int sig_num);
+void *handle_server_manager(void *arg);
 
 int main(int argc, char *argv[]) {
-    int mode = 0; // 0: undefined, 1: independent server, 2: server manager
-
+    // Parse command-line options
     int opt;
     while ((opt = getopt(argc, argv, "im")) != -1) {
         switch (opt) {
             case 'i':
-                mode = 1;
+                mode = 1; // Independent server mode
                 break;
             case 'm':
-                mode = 2;
+                mode = 2; // Server manager mode
                 break;
-            default: /* '?' */
+            default:
                 fprintf(stderr, "Usage: %s [-i | -m] <address> <port>\n", argv[0]);
                 exit(EXIT_FAILURE);
         }
     }
 
+    // Ensure address and port are provided
     if (mode == 0 || optind + 2 > argc) {
         fprintf(stderr, "Usage: %s [-i | -m] <address> <port>\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -74,20 +82,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    switch (mode) {
-        case 1: // Independent server mode
-            printf("Starting independent server on %s:%ld\n", address, port_long);
-            start_server(address, (uint16_t)port_long);
-            break;
-        case 2: // Server manager mode
-            printf("Starting server manager on %s:%ld\n", address, port_long);
-            // Add specific logic for server manager mode here
-            break;
-        default:
-            fprintf(stderr, "Unknown mode. Please use -i for independent server mode or -m for server manager mode.\n");
-            exit(EXIT_FAILURE);
-    }
-
+    printf("Mode: %d\n", mode);
+    start_server(address, (uint16_t)port_long);
 
     return 0;
 }
@@ -124,6 +120,10 @@ void start_server(const char *address, uint16_t port) {
 
     printf("Server listening on %s:%d\n", address, port);
 
+    if (mode == 1) { // Independent server mode
+        server_operational = true; // Server is operational immediately in independent mode
+    }
+
     while (1) {
         client_len = sizeof(client_addr);
         client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
@@ -132,12 +132,25 @@ void start_server(const char *address, uint16_t port) {
             continue;
         }
 
-        pthread_t tid;
-        if (pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)client_socket) != 0) {
-            perror("Thread creation failed");
-            close(client_socket);
+        if (mode == 2 && !server_manager_authenticated) {
+            // Handle server manager authentication separately.
+            pthread_t server_manager_thread;
+            if (pthread_create(&server_manager_thread, NULL, handle_server_manager, (void *)(intptr_t)client_socket) != 0) {
+                perror("Server Manager Thread creation failed");
+                close(client_socket);
+            }
+            continue; // Go back to the start of the loop.
+        } else if (mode == 1 || (mode == 2 && server_operational)) { // Adjusted line
+            pthread_t tid;
+            if (pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)client_socket) != 0) {
+                perror("Thread creation failed");
+                close(client_socket);
+            } else {
+                pthread_detach(tid);
+            }
         } else {
-            pthread_detach(tid);
+            // This else block might be for handling non-operational state in server manager mode
+            close(client_socket); // Close client connection if not operational yet in server manager mode
         }
     }
     close(server_socket);
@@ -149,6 +162,11 @@ void *handle_client(void *arg) {
     uint8_t version;
     uint16_t content_size_net, content_size;
     char content[BUFFER_SIZE];
+
+    if (mode == 2) { // Server manager mode
+        // Initially, only authenticate the server manager
+        initializeServerManagerMode(client_socket);
+    }
 
     addClient(client_socket); // Add client with a temporary empty username
 
@@ -190,13 +208,22 @@ void processCommand(int sockfd, const char* command) {
     }
 
     char* token;
-    char* rest = strdup(command); // Create a mutable copy of command for strtok_r
-    char* saveptr = NULL; // Use a separate pointer for strtok_r
-    token = strtok_r(rest, " ", &saveptr); // Pass the address of saveptr
+    char* rest = strdup(command);
+    char* saveptr = NULL;
+    token = strtok_r(rest, " ", &saveptr);
 
     if (token == NULL) {
         free(rest);
         return;
+    }
+
+    // Handling server start command by the server manager.
+    if (strcmp(token, "/s") == 0 && client->is_server_manager) {
+        server_operational = true;
+        const char* msg = "Server is now operational. Accepting client connections...\n";
+        send_message_protocol(sockfd, msg);
+        free(rest);
+        return; // Early return to prevent further command processing.
     }
 
     if (strcmp(token, "/u") == 0) {
@@ -390,5 +417,105 @@ Client* getClientByUsername(const char* username) {
         }
     }
     pthread_mutex_unlock(&clients_mutex);
+    return NULL;
+}
+
+void initializeServerManagerMode(int client_socket) {
+    char buffer[BUFFER_SIZE];
+    bool authenticated = false;
+
+    // Initially, authenticate only the server manager.
+    while (!authenticated) {
+        ssize_t bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        if (bytes_received <= 0) {
+            printf("Client disconnected or error occurred.\n");
+            close(client_socket);
+            return;
+        }
+
+        buffer[bytes_received] = '\0'; // Null-terminate the received data.
+        if (authenticate_server_manager(buffer)) {
+            authenticated = true;
+            server_manager_authenticated = true;
+            const char* msg = "Authentication successful. Use /s to start server.\n";
+            send_message_protocol(client_socket, msg);
+
+            // Mark this client as the server manager.
+            pthread_mutex_lock(&clients_mutex);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].socket == client_socket) {
+                    clients[i].is_server_manager = true;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&clients_mutex);
+        } else {
+            const char* msg = "Authentication failed. Try again.\n";
+            send_message_protocol(client_socket, msg);
+        }
+    }
+}
+
+
+bool authenticate_server_manager(const char* password) {
+    return strcmp(password, SERVER_MANAGER_PASSWORD) == 0;
+}
+
+void *handle_server_manager(void *arg) {
+    int client_socket = (int)(intptr_t)arg;
+    uint8_t version;
+    uint16_t content_size_net, content_size;
+    char content[BUFFER_SIZE];
+
+    while (!server_manager_authenticated) {
+        ssize_t bytes_received = recv(client_socket, content, BUFFER_SIZE - 1, 0);
+        if (bytes_received <= 0) {
+            printf("Server manager disconnected or error occurred.\n");
+            close(client_socket);
+            return NULL;
+        }
+        content[bytes_received] = '\0'; // Null-terminate the received data.
+
+        if (!server_manager_authenticated && authenticate_server_manager(content)) {
+            server_manager_authenticated = true;
+            const char* msg = "Authentication successful. Use /s to start the server or /q to quit.\n";
+            send_message_protocol(client_socket, msg);
+            // Mark this client as the server manager.
+            pthread_mutex_lock(&clients_mutex);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].socket == client_socket) {
+                    clients[i].is_server_manager = true;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&clients_mutex);
+        } else {
+            const char* msg = "Authentication failed. Try again.\n";
+            send_message_protocol(client_socket, msg);
+        }
+    }
+
+    // Handle server manager commands.
+    while (server_manager_authenticated) {
+        ssize_t bytes_received = recv(client_socket, content, BUFFER_SIZE - 1, 0);
+        if (bytes_received <= 0) {
+            printf("Server manager disconnected.\n");
+            server_manager_authenticated = false;
+            server_operational = false; // Consider what should happen here.
+            close(client_socket);
+            return NULL;
+        }
+        content[bytes_received] = '\0';
+
+        if (strcmp(content, "/s") == 0) {
+            server_operational = true;
+            broadcastMessage("Server", "Server is now operational. Accepting client connections...");
+            printf("Server is now operational. Accepting client connections...\n");
+        } else if (strcmp(content, "/q") == 0) {
+            printf("Server is shutting down by server manager command.\n");
+            exit(EXIT_SUCCESS); // Or handle server shutdown more gracefully.
+        }
+    }
+
     return NULL;
 }
