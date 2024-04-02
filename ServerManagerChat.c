@@ -380,6 +380,7 @@ void addClient(int socket) {
     if (found) {
         char msg[BUFFER_SIZE];
         snprintf(msg, sizeof(msg), "Connected clients: %d", countActiveClients());
+        printf("Debug: %s\n", msg); // Debug print for the server console
         notifyServerManagers(msg);
     }
 }
@@ -398,6 +399,7 @@ void removeClient(int socket) {
     if (found) {
         char msg[BUFFER_SIZE];
         snprintf(msg, sizeof(msg), "Connected clients: %d", countActiveClients());
+        printf("Debug: %s\n", msg); // Debug print for the server console
         notifyServerManagers(msg);
     }
 }
@@ -592,6 +594,7 @@ void notifyServerManagers(const char *message) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].is_active && clients[i].is_server_manager) {
+            printf("Debug: Notifying server manager (socket %d) - %s\n", clients[i].socket, message);
             send_message_protocol(clients[i].socket, message);
         }
     }
