@@ -249,6 +249,11 @@ void processCommand(int sockfd, const char* command) {
     } else if (strcmp(token, "/h") == 0) {
         printf("Help command received.\n");
         sendHelp(sockfd);
+    } else if (strcmp(token, "/e") == 0) {
+        printf("Client requested to close the connection.\n");
+        removeClient(sockfd); // Remove client from the global list
+        close(sockfd); // Close the socket connection
+        return; // Exit the function to prevent further processing
     } else {
         // This is not a recognized command, treat it as a broadcast message
         broadcastMessage(client->username, command);
@@ -288,7 +293,7 @@ void whisper(const char* senderUsername, const char* username, const char* messa
     Client* recipient = getClientByUsername(username);
     if (recipient) {
         char whisperMsg[BUFFER_SIZE];
-        snprintf(whisperMsg, sizeof(whisperMsg), "%s whispers: %s", senderUsername, message);
+        snprintf(whisperMsg, sizeof(whisperMsg), "%s whispers: %s\n", senderUsername, message);
         send_message_protocol(recipient->socket, whisperMsg);
     } else {
         // Handle user not found
@@ -347,7 +352,7 @@ void broadcastMessage(const char* senderUsername, const char* message) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].is_active && strcmp(clients[i].username, senderUsername) != 0) { // Don't send the message back to the sender
             char formattedMessage[BUFFER_SIZE];
-            snprintf(formattedMessage, BUFFER_SIZE, "%s has sent: %s", senderUsername, message);
+            snprintf(formattedMessage, BUFFER_SIZE, "%s has sent: %s\n", senderUsername, message);
 
             // Debug log to verify formatted message
             printf("Broadcasting message: %s\n", formattedMessage);
@@ -509,7 +514,7 @@ void *handle_server_manager(void *arg) {
 
         if (strcmp(content, "/s") == 0) {
             server_operational = true;
-            broadcastMessage("Server", "Server is now operational. Accepting client connections...");
+            broadcastMessage("Server", "Server is now operational. Accepting client connections...\n");
             printf("Server is now operational. Accepting client connections...\n");
         } else if (strcmp(content, "/q") == 0) {
             printf("Server is shutting down by server manager command.\n");
