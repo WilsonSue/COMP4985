@@ -522,7 +522,7 @@ void *handle_server_manager(void *arg) {
         printf("Debug: Received password attempt: %s\n", content);
         if (!server_manager_authenticated && authenticate_server_manager(content)) {
             server_manager_authenticated = true;
-            const char* msg = "Authentication successful. Use /s to start the server or /q to quit.\n";
+            const char* msg = "ACCEPTED";
             send_message_protocol(client_socket, msg);
             // Mark this client as the server manager.
             pthread_mutex_lock(&clients_mutex);
@@ -571,9 +571,13 @@ void *handle_server_manager(void *arg) {
         // Process the command
         if (strcmp(content, "/s") == 0) {
             server_operational = true;
+            const char* msg = "STARTED";
+            send_message_protocol(client_socket, msg);
             broadcastMessage("Server", "Server is now operational. Accepting client connections...");
             printf("Server is now operational. Accepting client connections...\n");
         } else if (strcmp(content, "/q") == 0) {
+            const char* msg = "STOPPED";
+            send_message_protocol(client_socket, msg);
             printf("Server is shutting down by server manager command.\n");
             exit(EXIT_SUCCESS); // Or handle server shutdown more gracefully.
         }
