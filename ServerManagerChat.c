@@ -468,19 +468,40 @@ bool authenticate_server_manager(const char* password) {
 
 void *handle_server_manager(void *arg) {
     int client_socket = (int)(intptr_t)arg;
-    uint8_t version;
-    uint16_t content_size_net, content_size;
     char content[BUFFER_SIZE];
+    uint8_t version;
+    uint16_t content_size_net;
+    uint16_t content_size;
 
     while (!server_manager_authenticated) {
-        ssize_t bytes_received = recv(client_socket, content, BUFFER_SIZE - 1, 0);
-        if (bytes_received <= 0) {
-            printf("Server manager disconnected or error occurred.\n");
-            close(client_socket);
-            return NULL;
+        // Read version
+        if (recv(client_socket, &version, sizeof(version), 0) <= 0) {
+            printf("Failed to read version\n");
+            break;
         }
-        content[bytes_received] = '\0'; // Null-terminate the received data.
 
+        // Read content size
+        if (recv(client_socket, &content_size_net, sizeof(content_size_net), 0) <= 0) {
+            printf("Failed to read content size\n");
+            break;
+        }
+        content_size = ntohs(content_size_net);
+
+        // Ensure that the content size is within buffer limits
+        if (content_size >= BUFFER_SIZE) {
+            printf("Content size too large\n");
+            break;
+        }
+
+        // Read content based on the received size
+        ssize_t bytes_received = recv(client_socket, content, content_size, 0);
+        if (bytes_received <= 0) {
+            printf("Failed to read content or server manager disconnected\n");
+            break;
+        }
+        content[bytes_received] = '\0'; // Null-terminate the received content
+
+        printf("Debug: Received password attempt: %s\n", content);
         if (!server_manager_authenticated && authenticate_server_manager(content)) {
             server_manager_authenticated = true;
             const char* msg = "Authentication successful. Use /s to start the server or /q to quit.\n";
