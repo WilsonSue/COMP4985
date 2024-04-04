@@ -30,15 +30,15 @@ int mode = 0; // Global server mode
 bool server_manager_authenticated = false;
 bool server_operational = false;
 
+void disconnectAllClients();
 void *handle_client(void *arg);
 void *handle_server_manager(void *arg);
 void start_server(const char *address, uint16_t port);
 void broadcastMessage(const char* senderUsername, const char* message);
 void listUsers(int sockfd);
 void whisper(const char* senderUsername, const char* username, const char* message);
-bool authenticate_server_manager(const char* password);
-void initializeServerManagerMode(int client_socket);
 
+bool authenticate_server_manager(const char* password);
 // Helper functions to manage clients
 void addClient(int socket);
 void removeClient(int socket);
@@ -53,7 +53,7 @@ void sigintHandler(int sig_num);
 int countActiveClients();
 void notifyServerManagers(const char *message);
 
-int main(int argc, char *argv[]) {
+        int main(int argc, char *argv[]) {
     // Parse command-line options
     int opt;
     while ((opt = getopt(argc, argv, "im")) != -1) {
@@ -135,15 +135,12 @@ void start_server(const char *address, uint16_t port) {
         }
 
         if (mode == 2 && !server_manager_authenticated) {
-            // This block is correctly handling server manager authentication
             pthread_t server_manager_thread;
             if (pthread_create(&server_manager_thread, NULL, handle_server_manager, (void *)(intptr_t)client_socket) != 0) {
                 perror("Server Manager Thread creation failed");
                 close(client_socket);
             }
         } else {
-            // Regular client handling
-            // Ensure this block is correctly identifying and handling regular clients
             pthread_t tid;
             if (pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)client_socket) != 0) {
                 perror("Thread creation failed");
@@ -156,7 +153,6 @@ void start_server(const char *address, uint16_t port) {
 
     close(server_socket);
 }
-
 
 void *handle_client(void *arg) {
     int client_socket = (int)(intptr_t)arg;
@@ -251,7 +247,7 @@ void processCommand(int sockfd, const char* command) {
         removeClient(sockfd);
         close(sockfd);
     } else {
-        broadcastMessage(client->username, commandCopy); // Use trimmed command for broadcasting
+        broadcastMessage(client->username, command); // Use trimmed command for broadcasting
     }
 }
 
@@ -440,45 +436,22 @@ Client* getClientByUsername(const char* username) {
     return NULL;
 }
 
-void initializeServerManagerMode(int client_socket) {
-    char buffer[BUFFER_SIZE];
-    bool authenticated = false;
-
-    // Initially, authenticate only the server manager.
-    while (!authenticated) {
-        ssize_t bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-        if (bytes_received <= 0) {
-            printf("Client disconnected or error occurred.\n");
-            close(client_socket);
-            return;
-        }
-
-        buffer[bytes_received] = '\0'; // Null-terminate the received data.
-        if (authenticate_server_manager(buffer)) {
-            authenticated = true;
-            server_manager_authenticated = true;
-            const char* msg = "Authentication successful. Use /s to start server.\n";
-            send_message_protocol(client_socket, msg);
-
-            // Mark this client as the server manager.
-            pthread_mutex_lock(&clients_mutex);
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (clients[i].socket == client_socket) {
-                    clients[i].is_server_manager = true;
-                    break;
-                }
-            }
-            pthread_mutex_unlock(&clients_mutex);
-        } else {
-            const char* msg = "Authentication failed. Try again.\n";
-            send_message_protocol(client_socket, msg);
-        }
-    }
-}
-
-
 bool authenticate_server_manager(const char* password) {
     return strcmp(password, SERVER_MANAGER_PASSWORD) == 0;
+}
+
+void disconnectAllClients() {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].is_active) {
+            const char* msg = "Server is shutting down. Disconnecting...\n";
+            send_message_protocol(clients[i].socket, msg);
+            close(clients[i].socket); // Close the client socket
+            clients[i].is_active = false; // Mark the client as inactive
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    printf("All clients have been disconnected.\n");
 }
 
 void *handle_server_manager(void *arg) {
@@ -538,6 +511,8 @@ void *handle_server_manager(void *arg) {
 
     // Handle server manager commands.
     while (server_manager_authenticated) {
+
+        printf("Listening for commands...\n");
         // Read version
         if (recv(client_socket, &version, sizeof(version), 0) <= 0) {
             printf("Failed to read version\n");
@@ -573,10 +548,11 @@ void *handle_server_manager(void *arg) {
             broadcastMessage("Server", "Server is now operational. Accepting client connections...");
             printf("Server is now operational. Accepting client connections...\n");
         } else if (strcmp(content, "/q") == 0) {
+            server_operational = false;
             const char* msg = "STOPPED";
             send_message_protocol(client_socket, msg);
             printf("Server is shutting down by server manager command.\n");
-            exit(EXIT_SUCCESS); // Or handle server shutdown more gracefully.
+            disconnectAllClients();
         }
     }
     return NULL;
