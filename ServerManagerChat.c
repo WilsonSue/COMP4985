@@ -169,7 +169,7 @@ void *handle_client(void *arg) {
         }
 
         content_size = ntohs(content_size_net);
-        if (content_size >= BUFFER_SIZE) {
+        if (content_size > BUFFER_SIZE - 1) {
             printf("Message too large.\n");
             continue;
         }
@@ -476,9 +476,9 @@ void *handle_server_manager(void *arg) {
         content_size = ntohs(content_size_net);
 
         // Ensure that the content size is within buffer limits
-        if (content_size >= BUFFER_SIZE) {
-            printf("Content size too large\n");
-            break;
+        if (content_size > BUFFER_SIZE - 1) {
+            printf("Message too large.\n");
+            continue;
         }
 
         // Read content based on the received size
@@ -527,9 +527,9 @@ void *handle_server_manager(void *arg) {
         content_size = ntohs(content_size_net);
 
         // Ensure that the content size is within buffer limits
-        if (content_size >= BUFFER_SIZE) {
-            printf("Content size too large\n");
-            continue; // Skip this message but don't disconnect
+        if (content_size > BUFFER_SIZE - 1) {
+            printf("Message too large.\n");
+            continue;
         }
 
         // Read content based on the received size
