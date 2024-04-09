@@ -9,8 +9,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <signal.h>
 
-// gcc -o testman main1.c -lncurses
+// gcc -o testman main2.c -lncurses
 
 #define MAX_MESSAGE_LENGTH 1024    // Buffer length
 #define CURRENT_VERSION 1          // Current version of the protocol
@@ -24,7 +25,7 @@
 // #define SERVER_STOPPED "STOPPED"        // Server stopped message
 
 #ifndef SOCK_CLOEXEC
-#pragma GCC diagnostic push
+    #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wunused-macros"
     #define SOCK_CLOEXEC 0
     #pragma GCC diagnostic pop
@@ -591,7 +592,7 @@ int main(void)
                 close(sockfd);
                 sockfd = 0;
                 free(ipAddress);
-                pthread_join(listenThread, 0);
+                pthread_kill(listenThread, 0);
                 // pthread_kill(printThread, 0);
                 pthread_mutex_destroy(&sharedData.mutex);
                 pthread_cond_destroy(&sharedData.condVar);
