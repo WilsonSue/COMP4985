@@ -1,598 +1,449 @@
-    #include <arpa/inet.h>
-    #include <netinet/in.h>
-    #include <pthread.h>
-    #include <stdio.h>
-    #include <stdlib.h>
-    #include <string.h>
-    #include <sys/socket.h>
-    #include <unistd.h>
-    #include <stdbool.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-    #define MAX_CLIENTS 32
-    #define BUFFER_SIZE 1024
-    #define UINT16_MAX 65535
+#define MAX_CLIENTS 32
+#define BUFFER_SIZE 1024
+#define MAX_USERNAME_LENGTH 256
+#define TEN 10
 
-    #define SERVER_MANAGER_PORT 9999
-    #define SERVER_MANAGER_PASSKEY "hellyabrother"
+typedef struct
+{
+    int  socket;
+    char username[MAX_USERNAME_LENGTH];
+    bool is_active;
+} Client;
 
-    struct ClientInfo {
-        int client_socket;
-        int client_index;
-        int clients[MAX_CLIENTS];
-        char username[256];
-        bool is_username_set;
-        char client_usernames[MAX_CLIENTS][256];
-    };
+static Client          clients[MAX_CLIENTS];                         // Global client list
+static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;    // Mutex for thread-safe access to clients
+static int             server_socket;                                // Make server_socket global
 
-    struct ServerManagerArgs {
-        const char *ip_address;
-        uint16_t port;
-    };
+void                          *handle_client(void *arg);
+__attribute__((noreturn)) void start_server(const char *address, uint16_t port);
+void                           send_message_protocol(int sockfd, const char *message);
+void                           broadcastMessage(const char *senderUsername, const char *message);
+void                           listUsers(int sockfd);
+void                           whisper(const char *senderUsername, const char *username, const char *message);
+void                           trim_newline(char *str);
 
+// Helper functions to manage clients
+void                           addClient(int socket);
+void                           removeClient(int socket);
+Client                        *getClientByUsername(const char *username);
+void                           setUsername(int sockfd, const char *username);
+Client                        *getClientBySocket(int socket);
+void                           processCommand(int sockfd, const char *command);
+void                           sendHelp(int sockfd);
+__attribute__((noreturn)) void sigintHandler(int sig_num);
 
-    static const int value = 10;
-    static const int valueNew = 20;
+int main(int argc, char *argv[])
+{
+    char    *endptr;
+    long int port_long;
 
-    void *handle_client(void *arg);
-    void start_server(const char *address, uint16_t port);
-    void processCommand(struct ClientInfo* client, const char* command);
-    void setUsername(struct ClientInfo* client, const char* username);
-    void listUsers(struct ClientInfo* client);
-    void whisper(struct ClientInfo* client, const char* username, const char* message);
-    void sendHelp(struct ClientInfo* client);
-    void send_message_protocol(int sockfd, const char *message);
-    void trim_newline(char *str);
-    void initialize_client_usernames(struct ClientInfo* client);
-    void removeClient(struct ClientInfo* client);
-
-    void *server_manager_thread(void *arg);
-    void authenticate_server_manager(int server_manager_socket);
-
-        int main(int argc, char *argv[]) {
-        if (argc != 4) {
-            fprintf(stderr, "Usage: %s [-s | -a] <address> <port>\n", argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if (strcmp(argv[1], "-s") == 0) {
-            // Start in server manager mode
-            printf("Starting in server manager mode...\n");
-
-            // Create arguments for the server manager thread
-            struct ServerManagerArgs args;
-            args.ip_address = argv[2];
-            args.port = (uint16_t)atoi(argv[3]); // Convert port to uint16_t
-
-            pthread_t manager_tid;
-            if (pthread_create(&manager_tid, NULL, server_manager_thread, (void *)&args) != 0) {
-                perror("Server manager thread creation failed");
-                exit(EXIT_FAILURE);
-            }
-
-            printf("Server manager thread started.\n");
-
-            // Wait for the server manager thread to finish
-            pthread_join(manager_tid, NULL);
-        } else if (strcmp(argv[1], "-a") == 0) {
-            // Start in server mode
-            char *endptr;
-            long int port_long = strtol(argv[3], &endptr, value);
-
-            // Check for conversion errors
-            if (*endptr != '\0' || port_long < 0 || port_long > UINT16_MAX) {
-                fprintf(stderr, "Invalid port number: %s\n", argv[3]);
-                exit(EXIT_FAILURE);
-            }
-
-            printf("Starting server on %s:%s\n", argv[2], argv[3]);
-            start_server(argv[2], (uint16_t)port_long);
-        } else {
-            fprintf(stderr,
-                    "Invalid mode. Use -s for the server manager or -a for the server.\n");
-            exit(EXIT_FAILURE);
-        }
-
-        return 0;
+    if(argc != 3)
+    {
+        fprintf(stderr, "Usage: %s <address> <port>\n", argv[0]);
+        exit(EXIT_FAILURE);
     }
 
-    void start_server(const char *address, uint16_t port) {
-        int server_socket;
-        int client_socket;
-        struct sockaddr_in server_addr;
-        struct sockaddr_in client_addr;
-        int clients[MAX_CLIENTS] = {0};
-        int optval = 1;
+    port_long = strtol(argv[2], &endptr, TEN);
 
-    #ifdef SOCK_CLOEXEC
-        server_socket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    #else
-        server_socket =
-          socket(AF_INET, SOCK_STREAM, 0); // NOLINT(android-cloexec-socket)
-    #endif
+    // Check for conversion errors
+    if(*endptr != '\0' || port_long < 0 || port_long > UINT16_MAX)
+    {
+        fprintf(stderr, "Invalid port number: %s\n", argv[2]);
+        exit(EXIT_FAILURE);
+    }
 
-        if (server_socket == -1) {
-            perror("Server Socket creation failed");
-            exit(EXIT_FAILURE);
+    printf("Starting server on %s:%ld\n", argv[1], port_long);
+    start_server(argv[1], (uint16_t)port_long);
+
+    // return 0; <-- DON'T KNOW IF THAT WILL BREAK ANYTHING
+}
+
+void start_server(const char *address, uint16_t port)
+{
+    int                client_socket;
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
+    socklen_t          client_len;
+    pthread_t          tid;
+
+    // Register signal handler for SIGINT
+    signal(SIGINT, sigintHandler);
+
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(server_socket == -1)
+    {
+        perror("Server socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_addr.sin_family      = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr(address);
+    server_addr.sin_port        = htons(port);
+
+    if(bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1)
+    {
+        perror("Bind failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    if(listen(server_socket, MAX_CLIENTS) == -1)
+    {
+        perror("Listen failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Server listening on %s:%d\n", address, port);
+
+    while(1)
+    {
+        client_len    = sizeof(client_addr);
+        client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
+        if(client_socket < 0)
+        {
+            perror("Accept failed");
+            continue;
         }
 
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_addr.s_addr = inet_addr(address);
-        server_addr.sin_port = htons(port);
-
-        // Bind
-        if (bind(server_socket, (struct sockaddr *)&server_addr,
-                 sizeof(server_addr)) == -1) {
-            perror("Bind failed");
-            close(server_socket);
-            exit(EXIT_FAILURE);
+        if(pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)client_socket) != 0)
+        {
+            perror("Thread creation failed");
+            close(client_socket);
         }
-
-        if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &optval,
-                       sizeof(optval)) == -1) {
-            perror("Setsockopt failed");
-            close(server_socket);
-            exit(EXIT_FAILURE);
+        else
+        {
+            pthread_detach(tid);
         }
-
-        // Listen
-        if (listen(server_socket, valueNew) == -1) {
-            perror("Listen failed");
-            close(server_socket);
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Server listening on %s:%d\n", address, port);
-
-        printf("Server setup complete. Waiting for connections...\n");
-        while (1) {
-            int activity;
-            int client_len = sizeof(client_addr);
-            pthread_t tid;
-            int max_sd = server_socket;
-
-            fd_set readfds;
-            FD_ZERO(&readfds);
-            FD_SET((long unsigned int)server_socket, &readfds);
-            FD_SET((long unsigned int)STDIN_FILENO, &readfds);
-
-            for (int i = 0; i < MAX_CLIENTS; ++i) {
-                if (clients[i] > 0) {
-                    FD_SET((long unsigned int)clients[i], &readfds);
-                    if (clients[i] > max_sd) {
-                        max_sd = clients[i];
-                    }
-                }
-            }
-
-            // Wait for activity on one of the sockets
-            activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
-
-            if (activity < 0) {
-                perror("Select error");
-                close(server_socket);
-                exit(EXIT_FAILURE);
-            }
-
-            // New connection
-            if (FD_ISSET((long unsigned int)server_socket, &readfds)) {
-                struct ClientInfo *client_info;
-                int client_index = -1;
-                for (int i = 0; i < MAX_CLIENTS; ++i) {
-                    if (clients[i] == 0) {
-                        client_index = i;
-                        break;
-                    }
-                }
-
-                if (client_index == -1) {
-                    fprintf(stderr, "Too many clients. Connection rejected.\n");
-                    close(server_socket); // Move close inside the loop
-                    break;
-                }
-
-                client_socket = accept(server_socket, (struct sockaddr *)&client_addr,
-                                       (socklen_t *)&client_len);
-                printf("Connection accepted from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-                if (client_socket == -1) {
-                    perror("Accept failed");
-                    close(server_socket);
-                    exit(EXIT_FAILURE);
-                }
-
-                printf("New connection from %s:%d, assigned to Client %d\n",
-                       inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port),
-                       client_index);
-
-                clients[client_index] = client_socket;
-
-                // Create a structure to hold client information
-                client_info = (struct ClientInfo *)malloc(sizeof(struct ClientInfo));
-                if (client_info == NULL) {
-                    perror("Memory allocation failed");
-                    close(server_socket);
-                    exit(EXIT_FAILURE);
-                }
-
-                client_info->client_socket = client_socket;
-                client_info->client_index = client_index;
-                memcpy(client_info->clients, clients, sizeof(clients));
-
-                // Create a new thread to handle the client
-                if (pthread_create(&tid, NULL, handle_client, (void *)client_info) != 0) {
-                    perror("Thread creation failed");
-                    close(server_socket);
-                    free(client_info);
-                    exit(EXIT_FAILURE);
-                }
-                printf("Started new thread for client %d\n", client_index);
-
-                // Detach the thread (we won't join it, allowing it to clean up resources
-                // on its own)
-                pthread_detach(tid);
-            }
-
-            // Check if there is input from the server's console
-            if (FD_ISSET((long unsigned int)STDIN_FILENO, &readfds)) {
-                char server_buffer[BUFFER_SIZE];
-                fgets(server_buffer, sizeof(server_buffer), stdin);
-
-                // Broadcast the server's message to all connected clients
-                for (int i = 0; i < MAX_CLIENTS; ++i) {
-                    if (clients[i] != 0) {
-                        send_message_protocol(clients[i], server_buffer);
-                    }
-                }
-            }
-        }
-
-        // Close the server socket when the loop exits
         close(server_socket);
     }
+    // close(server_socket); <--DON'T KNOW IF THAT WILL BREAK ANYTHING
+}
 
-    // Server manager thread function
-    void *server_manager_thread(void *arg) {
-        // Extract IP address and port from the argument
-        struct ServerManagerArgs *args = (struct ServerManagerArgs *)arg;
-        const char *ip_address = args->ip_address;
-        uint16_t port = args->port;
+void *handle_client(void *arg)
+{
+    int      client_socket = (int)(intptr_t)arg;
+    uint8_t  version;
+    uint16_t content_size_net;
+    uint16_t content_size;
+    char     content[BUFFER_SIZE];
+    ssize_t  bytes_received;
 
-        int server_manager_socket, client_socket;
-        struct sockaddr_in server_manager_addr, client_addr;
-        socklen_t client_len;
-        char buffer[BUFFER_SIZE];
+    addClient(client_socket);    // Add client with a temporary empty username
 
-        // Create socket
-        server_manager_socket = socket(AF_INET, SOCK_STREAM, 0);
-        if (server_manager_socket == -1) {
-            perror("Server manager socket creation failed");
-            exit(EXIT_FAILURE);
-        }
-
-        // Initialize server address structure
-        memset(&server_manager_addr, 0, sizeof(server_manager_addr));
-        server_manager_addr.sin_family = AF_INET;
-        server_manager_addr.sin_addr.s_addr = inet_addr(ip_address);
-        server_manager_addr.sin_port = htons(port);
-
-        // Bind socket
-        if (bind(server_manager_socket, (struct sockaddr *)&server_manager_addr, sizeof(server_manager_addr)) == -1) {
-            perror("Server manager bind failed");
-            close(server_manager_socket);
-            exit(EXIT_FAILURE);
-        }
-
-        // Listen for incoming connections
-        if (listen(server_manager_socket, 1) == -1) { // Allow only one connection
-            perror("Server manager listen failed");
-            close(server_manager_socket);
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Waiting for server manager to connect...\n");
-
-        // Accept incoming connection from server manager
-        client_len = sizeof(client_addr);
-        client_socket = accept(server_manager_socket, (struct sockaddr *)&client_addr, &client_len);
-        if (client_socket == -1) {
-            perror("Server manager accept failed");
-            close(server_manager_socket);
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Server manager connected.\n");
-
-        // Authenticate server manager
-        authenticate_server_manager(client_socket);
-
-        // Server manager interaction loop
-        while (1) {
-            // Receive version
-            uint8_t version;
-            ssize_t bytes_received = recv(client_socket, &version, sizeof(version), 0);
-            if (bytes_received <= 0) {
-                perror("Error receiving version from server manager");
-                break;
-            }
-
-            // Receive content size
-            uint16_t content_size_net;
-            bytes_received = recv(client_socket, &content_size_net, sizeof(content_size_net), 0);
-            if (bytes_received <= 0) {
-                perror("Error receiving content size from server manager");
-                break;
-            }
-            uint16_t content_size = ntohs(content_size_net); // Convert from network byte order to host byte order
-
-            // Receive content
-            bytes_received = recv(client_socket, buffer, content_size, 0);
-            if (bytes_received <= 0) {
-                perror("Error receiving content from server manager");
-                break;
-            }
-            buffer[bytes_received] = '\0'; // Null-terminate the received content
-
-            // Process commands from server manager
-            if (strcmp(buffer, "/s") == 0) {
-                // Start the server
-                printf("Starting the server.\n");
-                start_server(ip_address, port); // Use provided IP address and port
-                send(client_socket, "STARTED", strlen("STARTED"), 0);
-            } else if (strcmp(buffer, "/q") == 0) {
-                // Quit the server
-                printf("Stopping the server.\n");
-                // Perform cleanup if necessary
-                send(client_socket, "STOPPED", strlen("STOPPED"), 0);
-                break;
-            }
-        }
-
-
-        // Close the connection to the server manager and the server manager socket
-        close(client_socket);
-        close(server_manager_socket);
-
-        return NULL;
-    }
-
-    // Authenticate server manager
-    void authenticate_server_manager(int server_manager_socket) {
-        // Receive version
-        uint8_t version;
-        ssize_t bytes_received = recv(server_manager_socket, &version, sizeof(version), 0);
-        if (bytes_received <= 0) {
-            perror("Error receiving version from server manager");
-            exit(EXIT_FAILURE);
-        }
-
-        // Receive content size
-        uint16_t content_size_net;
-        bytes_received = recv(server_manager_socket, &content_size_net, sizeof(content_size_net), 0);
-        if (bytes_received <= 0) {
-            perror("Error receiving content size from server manager");
-            exit(EXIT_FAILURE);
-        }
-        uint16_t content_size = ntohs(content_size_net); // Convert from network byte order to host byte order
-
-        // Receive passkey
-        char passkey[BUFFER_SIZE];
-        bytes_received = recv(server_manager_socket, passkey, content_size, 0);
-        if (bytes_received <= 0) {
-            perror("Error receiving passkey from server manager");
-            exit(EXIT_FAILURE);
-        }
-        passkey[bytes_received] = '\0'; // Null-terminate the received passkey
-
-        // Compare passkey with predefined passkey
-        if (strcmp(passkey, SERVER_MANAGER_PASSKEY) != 0) {
-            printf("Server manager authentication failed.\n");
-            close(server_manager_socket);
-            exit(EXIT_FAILURE);
-        }
-
-        // Send acknowledgment of password acceptance
-        if (send(server_manager_socket, "ACCEPTED", strlen("ACCEPTED"), 0) == -1) {
-            perror("Error sending acknowledgment to server manager");
-            close(server_manager_socket);
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Server manager authenticated.\n");
-    }
-
-
-
-    void *handle_client(void *arg) {
-        struct ClientInfo *client_info = (struct ClientInfo *)arg;
-        uint8_t version;
-        uint16_t content_size_net; // Content size in network byte order
-        uint16_t content_size;     // Content size in host byte order
-        char content[BUFFER_SIZE]; // Buffer for the message content
-        char username_buffer[256]; //Buffer to store username
-        char welcome_message[] = "Welcome to the chat server! Please set your username using the command '/u <username>'.\n";
-
-    //    //Recieve and set the username
-    //    ssize_t bytes_recieved = recv(client_info->client_socket, username_buffer, sizeof(username_buffer), 0);
-    //    if (bytes_recieved <= 0) {
-    //        close(client_info->client_socket);
-    //        free(client_info);
-    //        return NULL;
-    //    }
-
-    //    username_buffer[bytes_recieved] = '\0'; //Null-terminate the recieved username
-    //    trim_newline(username_buffer); //Remove new line characters
-    //    setUsername(client_info, username_buffer); //Set the recieved username
-
-        // Send welcome message
-        send_message_protocol(client_info->client_socket, welcome_message);
-
-        while (1) {
-            // Read the version
-            ssize_t bytes_received = recv(client_info->client_socket, &version, sizeof(version), 0);
-            if (bytes_received <= 0) {
-                break; // Break if connection is closed or an error occurred
-            }
-
-            // Read the content size
-            bytes_received = recv(client_info->client_socket, &content_size_net, sizeof(content_size_net), 0);
-            if (bytes_received <= 0) {
-                break; // Break if connection is closed or an error occurred
-            }
-            content_size = ntohs(content_size_net); // Convert from network byte order to host byte order
-
-            // Validate content size to avoid buffer overflow
-            if (content_size > sizeof(content) - 1) {
-                printf("Content size too large\n");
-                continue; // Skip this message
-            }
-
-            // Read the content
-            bytes_received = recv(client_info->client_socket, content, content_size, 0);
-            if (bytes_received <= 0) {
-                break; // Break if connection is closed or an error occurred
-            }
-            content[bytes_received] = '\0'; // Null-terminate the received content
-
-            // Now that we have the content, we can process the command
-            processCommand(client_info, content);
-        }
-
-        // Close the client socket and free the client_info structure
-        close(client_info->client_socket);
-        free(client_info);
-        return NULL;
-    }
-
-
-    void processCommand(struct ClientInfo* client, const char* command)
+    while(1)
     {
-        // Ensure command is null-terminated
-        char command_copy[BUFFER_SIZE];
-        strncpy(command_copy, command, BUFFER_SIZE);
-        command_copy[BUFFER_SIZE - 1] = '\0';
-        trim_newline(command_copy);    // Remove newline characters
-
-        // Check if the username is not set
-        if(!client->is_username_set)
+        if(recv(client_socket, &version, sizeof(version), 0) <= 0 || recv(client_socket, &content_size_net, sizeof(content_size_net), 0) <= 0)
         {
-            setUsername(client, command_copy);    // set username using the recieved command
-            return;
+            break;    // Client disconnected
         }
-        // Parse and execute commands
-            if (strncmp(command_copy, "/u ", 3) == 0) {
-                // Set username
-                setUsername(client, command_copy + 3); // Skip over "/u " to username
-    }else if (strcmp(command_copy, "/ul") == 0) {
-            // List users
-            listUsers(client);
-        } else if (strncmp(command_copy, "/w ", 3) == 0) {
-            // Whisper
-            char* username = strtok(command_copy + 3, " "); // Extract username
-            char* message = strtok(NULL, ""); // Extract message
-            if (username && message) {
-                whisper(client, username, message);
-            }
-        } else if (strcmp(command_copy, "/h") == 0) {
-            // Help
-            sendHelp(client);
-        } else {
-            // Unknown command
-            const char* response = "Unknown command\n";
-            send_message_protocol(client->client_socket, response);
+
+        content_size = ntohs(content_size_net);
+        if(content_size >= BUFFER_SIZE)
+        {
+            printf("Message too large.\n");
+            continue;
         }
+
+        bytes_received = recv(client_socket, content, content_size, 0);
+        if(bytes_received <= 0)
+        {
+            break;    // Client disconnected
+        }
+
+        content[bytes_received] = '\0';    // Ensure message is null-terminated
+        printf("Received message: %s\n", content);
+
+        printf("Debug: Message before processing command: %s\n", content);
+        // Example processing command, this needs to be expanded according to your application's protocol
+        processCommand(client_socket, content);
     }
 
-    void initialize_client_usernames(struct ClientInfo* client){
-        for (int i = 0; i < MAX_CLIENTS; i++){
-            client->client_usernames[i][0] = '\0';
+    removeClient(client_socket);    // Remove client from global list
+    close(client_socket);
+    return NULL;
+}
+
+void processCommand(int sockfd, const char *command)
+{
+    char   *token;
+    char   *rest;
+    char   *saveptr;
+    Client *client = getClientBySocket(sockfd);
+    if(!client)
+    {
+        printf("Client not found for socket: %d\n", sockfd);
+        return;
+    }
+
+    rest    = strdup(command);                  // Create a mutable copy of command for strtok_r
+    saveptr = NULL;                             // Use a separate pointer for strtok_r
+    token   = strtok_r(rest, " ", &saveptr);    // Pass the address of saveptr
+
+    if(token == NULL)
+    {
+        free(rest);
+        return;
+    }
+
+    if(strcmp(token, "/u") == 0)
+    {
+        token = strtok_r(NULL, " ", &saveptr);    // Attempt to retrieve the next part of the command (username)
+        if(token)
+        {
+            setUsername(sockfd, token);
         }
-    }
-
-    void setUsername(struct ClientInfo* client, const char* username) {
-        strncpy(client->username, username, sizeof(client->username) - 1);
-        client->username[sizeof(client->username) - 1] = '\0'; // Ensure null-termination
-        client->is_username_set = true;
-        strncpy(client->client_usernames[client->client_index], username, 256 - 1);
-        client->client_usernames[client->client_index][256 - 1] = '\0';
-        char msg[] = "Username set successfully!\n";
-        send_message_protocol(client->client_socket, msg);
-    }
-
-    void removeClient(struct ClientInfo* client) {
-        client->clients[client->client_index] = 0; //mark client as disconnected
-        client->is_username_set = false; //reset username flag
-        client->client_usernames[client->client_index][0] = '\0'; //clear username mapping
-    }
-
-    void listUsers(struct ClientInfo* client) {
-        char userlist[BUFFER_SIZE] = "Connected users:\n";
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (client->clients[i] != 0 && client->client_usernames[i][0] != '\0') {
-                strcat(userlist, client->client_usernames[i]);
-                strcat(userlist, "\n");
-            }
-        }
-        // Using the send_message_protocol function
-        send_message_protocol(client->client_socket, userlist);
-    }
-
-    void whisper(struct ClientInfo* client, const char* username, const char* message) {
-        bool userFound = false;
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (client->clients[i] != 0 && strcmp(client[i].username, username) == 0) {
-                // Here, assume you will wrap the actual whisper message in the protocol format
-                send_message_protocol(client[i].client_socket, message);
-                userFound = true;
-                break;
-            }
-        }
-        if (!userFound) {
-            char msg[] = "User not found.\n";
-            send_message_protocol(client->client_socket, msg);
+        else
+        {
+            // If token is NULL, it means no username was provided after /u
+            const char *errorMessage = "Error: No username provided. Usage: /u <username>\n";
+            send_message_protocol(sockfd, errorMessage);
         }
     }
-
-
-    void sendHelp(struct ClientInfo* client) {
-        char helpMessage[] =
-                "Supported commands:\n"
-                "/u <username> - Set your username.\n"
-                "/ul - List all users connected to the server.\n"
-                "/w <username> <message> - Whisper a private message to <username>.\n"
-                "/h - Show this help message.\n";
-        // Using the send_message_protocol function
-        send_message_protocol(client->client_socket, helpMessage);
+    else if(strcmp(token, "/ul") == 0)
+    {
+        listUsers(sockfd);
     }
-
-    void send_message_protocol(int sockfd, const char *message) {
-        uint8_t version = 1;
-        uint16_t size = htons(strlen(message)); // Convert message length to network byte order
-
-        // Allocate buffer for version, size, and message
-        char buffer[BUFFER_SIZE];
-        int offset = 0;
-
-        // Assign version to buffer
-        memcpy(buffer + offset, &version, sizeof(version));
-        offset += sizeof(version);
-
-        // Assign size to buffer
-        memcpy(buffer + offset, &size, sizeof(size));
-        offset += sizeof(size);
-
-        // Copy message content to buffer
-        memcpy(buffer + offset, message, ntohs(size));
-
-        // Calculate total size to send
-        ssize_t total_size = offset + ntohs(size);
-
-        // Send buffer
-        send(sockfd, buffer, total_size, 0);
-    }
-
-    void trim_newline(char *str) {
-        char* pos;
-        if ((pos = strchr(str, '\n')) != NULL) {
-            *pos = '\0'; // Replace newline with null terminator
+    else if(strcmp(token, "/w") == 0)
+    {
+        char *username = strtok_r(NULL, " ", &saveptr);    // Continue using saveptr
+        char *message  = strtok_r(NULL, "", &saveptr);     // Continue using saveptr
+        if(username && message)
+        {
+            whisper(client->username, username, message);
+        }
+        else
+        {
+            const char *errorMessage = "Error: Incorrect whisper command usage. Usage: /w <username> <message>\n";
+            send_message_protocol(sockfd, errorMessage);
         }
     }
+    else if(strcmp(token, "/h") == 0)
+    {
+        printf("Help command received.\n");
+        sendHelp(sockfd);
+    }
+    else
+    {
+        // This is not a recognized command, treat it as a broadcast message
+        broadcastMessage(client->username, command);
+    }
+    free(rest);    // Now it's safe to free the strdup'ed command copy
+}
+
+void setUsername(int sockfd, const char *username)
+{
+    char msg[] = "Username set successfully.\n";
+    pthread_mutex_lock(&clients_mutex);
+
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(clients[i].socket == sockfd)
+        {
+            strncpy(clients[i].username, username, MAX_USERNAME_LENGTH - 1);
+            clients[i].username[MAX_USERNAME_LENGTH - 1] = '\0';    // Ensure null-termination
+            send_message_protocol(sockfd, msg);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void listUsers(int sockfd)
+{
+    char userlist[BUFFER_SIZE] = "Connected users:\n";
+    pthread_mutex_lock(&clients_mutex);
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(clients[i].is_active)
+        {
+            strcat(userlist, clients[i].username);
+            strcat(userlist, "\n");
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    send_message_protocol(sockfd, userlist);
+}
+
+void whisper(const char *senderUsername, const char *username, const char *message)
+{
+    Client *recipient = getClientByUsername(username);
+    if(recipient)
+    {
+        char whisperMsg[BUFFER_SIZE];
+        snprintf(whisperMsg, sizeof(whisperMsg), "%s whispers: %s", senderUsername, message);
+        send_message_protocol(recipient->socket, whisperMsg);
+    }
+    else
+    {
+        // Handle user not found
+    }
+}
+
+void sendHelp(int sockfd)
+{
+    char helpMessage[] = "Supported commands:\n"
+                         "/u <username> - Set your username.\n"
+                         "/ul - List all users connected to the server.\n"
+                         "/w <username> <message> - Whisper a private message to <username>.\n"
+                         "/h - Show this help message.\n";
+    send_message_protocol(sockfd, helpMessage);
+}
+
+void send_message_protocol(int sockfd, const char *message)
+{
+    // Allocate buffer for version, size, and message
+    char    buffer[BUFFER_SIZE];
+    int     offset = 0;
+    ssize_t total_size;
+
+    uint8_t  version        = 1;
+    size_t   message_length = strlen(message);
+    uint16_t size;
+
+    // Check if message length exceeds the maximum representable value for uint16_t
+    if(message_length > UINT16_MAX)
+    {
+        // Handle error: Message too long
+        printf("Error: Message length exceeds maximum size.\n");
+        return;
+    }
+
+    size = htons((uint16_t)message_length);    // Convert message length to network byte order
+
+    printf("Debug: Sending version: %u, message size: %u, message: %s\n", version, ntohs(size), message);
+
+    // Assign version to buffer
+    memcpy(buffer + offset, &version, sizeof(version));
+    offset += sizeof(version);
+
+    // Assign size to buffer
+    memcpy(buffer + offset, &size, sizeof(size));
+    offset += sizeof(size);
+
+    // Copy message content to buffer
+    memcpy(buffer + offset, message, ntohs(size));
+
+    // Calculate total size to send
+    total_size = offset + ntohs(size);
+
+    // Send buffer
+    send(sockfd, buffer, (size_t)total_size, 0);
+}
+
+void trim_newline(char *str)
+{
+    char *pos;
+    pos = strchr(str, '\n');
+    if(pos != NULL)
+    {
+        *pos = '\0';    // Replace newline with null terminator
+    }
+}
+
+// Modify the function to accept the sender's username
+void broadcastMessage(const char *senderUsername, const char *message)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(clients[i].is_active && strcmp(clients[i].username, senderUsername) != 0)
+        {    // Don't send the message back to the sender
+            char formattedMessage[BUFFER_SIZE];
+            snprintf(formattedMessage, BUFFER_SIZE, "%s has sent: %s", senderUsername, message);
+
+            // Debug log to verify formatted message
+            printf("Broadcasting message: %s\n", formattedMessage);
+
+            send_message_protocol(clients[i].socket, formattedMessage);
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void addClient(int socket)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(!clients[i].is_active)
+        {
+            clients[i].socket = socket;
+            snprintf(clients[i].username, MAX_USERNAME_LENGTH, "client_%d", i);    // Auto assign username
+            clients[i].is_active = true;
+            printf("Client %d connected with username: %s\n", socket, clients[i].username);    // Debug log
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void removeClient(int socket)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(clients[i].socket == socket)
+        {
+            clients[i].is_active = false;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+Client *getClientBySocket(int socket)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(clients[i].socket == socket && clients[i].is_active)
+        {
+            pthread_mutex_unlock(&clients_mutex);
+            return &clients[i];
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    return NULL;
+}
+
+void sigintHandler(int sig_num)
+{
+    // Signal handler for SIGINT
+    (void)sig_num;
+
+    printf("\nTerminating server...\n");
+    if(server_socket >= 0)
+    {
+        close(server_socket);
+        printf("Server socket closed.\n");
+    }
+    exit(EXIT_SUCCESS);
+}
+
+Client *getClientByUsername(const char *username)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(clients[i].is_active && strcmp(clients[i].username, username) == 0)
+        {
+            pthread_mutex_unlock(&clients_mutex);
+            return &clients[i];
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    return NULL;
+}
