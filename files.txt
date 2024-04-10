@@ -1,1 +1,2 @@
-main src/main.c src/display.c include/display.h
+ServerManagerChat src/ServerManagerChat.c include/ServerManagerChat.h
+./change-com
