@@ -8,12 +8,12 @@ typedef struct
     bool is_server_manager;
 } Client;
 
-Client          clients[MAX_CLIENTS];                         // Global client list
-pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;    // Mutex for thread-safe access to clients
-int             server_socket;                                // Make server_socket global
-int             mode                         = 0;             // Global server mode
-bool            server_manager_authenticated = false;
-bool            server_operational           = false;
+static Client          clients[MAX_CLIENTS];                         // Global client list NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;    // Mutex for thread-safe access to clients NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+static int             server_socket;                                // Make server_socket global NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+static int             mode                         = 0;             // Global server mode NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+static bool            server_manager_authenticated = false;         // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+static bool            server_operational           = false;         // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 void  disconnectAllClients();
 void *handle_client(void *arg);
