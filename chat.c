@@ -26,7 +26,6 @@ typedef struct
 } Client;
 
 static Client          clients[MAX_CLIENTS];                         // Global client list NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
-static Client          clients[MAX_CLIENTS];                         // Global client list NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;    // Mutex for thread-safe access to clients NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 static int             server_socket;                                // Make server_socket global NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 static int             mode                         = 0;             // Global server mode NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
@@ -60,9 +59,9 @@ int main(int argc, char *argv[])
 {
     // Parse command-line options
     int      opt;
-    char    *address   = argv[optind];
-    char    *port_str  = argv[optind + 1];
-    long int port_long = strtol(port_str, NULL, TEN);
+    char    *address;
+    char    *port_str;
+    long int port_long;
     while((opt = getopt(argc, argv, "im")) != -1)
     {
         switch(opt)
@@ -86,6 +85,9 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    address   = argv[optind];
+    port_str  = argv[optind + 1];
+    port_long = strtol(port_str, NULL, TEN);
     if(port_long < 1 || port_long > UINT16_MAX)
     {
         fprintf(stderr, "Invalid port number: %s\n", port_str);
